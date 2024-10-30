@@ -60,4 +60,40 @@ impl PendingPool {
         // TODO:  This should maybe only return the one best Searcher order we've seen?
         self.orders.values().cloned().collect()
     }
+
+    pub fn get_best_order(&self) -> Option<OrderWithStorageData<TopOfBlockOrder>> {
+        self.bids
+            .keys()
+            .next()
+            .and_then(|key| self.orders.get(&self.bids[key]))
+            .cloned()
+    }
+
+    pub fn bids_and_asks_to_ticks(
+        &self,
+        tick_size: alloy::primitives::U256,
+    ) -> (BTreeMap<alloy::primitives::U256, Vec<FixedBytes<32>>>, BTreeMap<alloy::primitives::U256, Vec<FixedBytes<32>>>) {
+        let mut bid_ticks: BTreeMap<alloy::primitives::U256, Vec<FixedBytes<32>>> = BTreeMap::new();
+        let mut ask_ticks: BTreeMap<alloy::primitives::U256, Vec<FixedBytes<32>>> = BTreeMap::new();
+
+        let price_to_tick = |price: alloy::primitives::U256| -> alloy::primitives::U256 { price / tick_size };
+
+        for (Reverse(priority_data), order_hash) in &self.bids {
+            let tick_index = price_to_tick(priority_data.price);
+            bid_ticks
+                .entry(tick_index)
+                .or_insert_with(Vec::new)
+                .push(*order_hash);
+        }
+
+        for (priority_data, order_hash) in &self.asks {
+            let tick_index = price_to_tick(priority_data.price);
+            ask_ticks
+                .entry(tick_index)
+                .or_insert_with(Vec::new)
+                .push(*order_hash);
+        }
+
+        (bid_ticks, ask_ticks)
+    }
 }
