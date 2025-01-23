@@ -232,7 +232,11 @@ where
         for pre_proposal_agg in pre_proposal_aggregation {
             pre_proposal_agg.pre_proposals.into_iter().for_each(|pre| {
                 limit.extend(pre.limit);
-                searcher.extend(pre.searcher);
+                searcher.extend(
+                    pre.searcher
+                        .into_iter()
+                        .map(|(key, searcher_order)| (key, searcher_order.tobo)) // Extract `tobo`
+                );
             });
         }
 
@@ -247,12 +251,12 @@ where
 
     fn filter_quorum_orders<O: Hash + Eq + Clone>(
         &self,
-        input: Vec<OrderWithStorageData<O>>
+        input: Vec<(FixedBytes<32>, OrderWithStorageData<O>)>
     ) -> Vec<OrderWithStorageData<O>> {
         let two_thirds = self.two_thirds_of_validation_set();
         input
             .into_iter()
-            .fold(HashMap::new(), |mut acc, order| {
+            .fold(HashMap::new(), |mut acc, (_, order)| {
                 *acc.entry(order).or_insert(0) += 1;
                 acc
             })

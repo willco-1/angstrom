@@ -104,14 +104,13 @@ impl<TP: TaskSpawner + 'static, V: BundleValidatorHandle> MatchingManager<TP, V>
     }
 
     pub fn orders_by_pool_id(preproposals: &[PreProposal]) -> HashMap<PoolId, HashSet<BookOrder>> {
-        preproposals
-            .iter()
-            .flat_map(|p| p.limit.iter())
-            .cloned()
-            .fold(HashMap::new(), |mut acc, order| {
-                acc.entry(order.pool_id).or_default().insert(order);
+        preproposals.iter().flat_map(|p| p.limit.iter()).fold(
+            HashMap::new(),
+            |mut acc, (pool_id, order)| {
+                acc.entry(*pool_id).or_default().insert(order.clone());
                 acc
-            })
+            }
+        )
     }
 
     pub fn build_non_proposal_books(

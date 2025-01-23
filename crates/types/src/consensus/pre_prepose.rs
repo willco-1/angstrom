@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    hash::Hasher
+    hash::{Hash, Hasher}
 };
 
 use alloy::{
@@ -22,27 +22,45 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct SearcherOrder {
+    pub tobo:       OrderWithStorageData<TopOfBlockOrder>,
+    pub tob_reward: U256
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreProposal {
     pub block_height: BlockNumber,
     pub source:       PeerId,
-    // TODO: this really should be HashMap<PoolId, GroupedVanillaOrder>
-    pub limit:        Vec<OrderWithStorageData<GroupedVanillaOrder>>,
-    // TODO: this really should be another type with HashMap<PoolId, {order, tob_reward}>
-    pub searcher:     Vec<OrderWithStorageData<TopOfBlockOrder>>,
-    /// The signature is over the ethereum height as well as the limit and
-    /// searcher sets
+    pub limit:        HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>>,
+    pub searcher:     HashMap<PoolId, SearcherOrder>,
     pub signature:    Signature
 }
 
-impl Default for PreProposal {
-    fn default() -> Self {
-        Self {
-            signature:    Signature::new(U256::ZERO, U256::ZERO, false),
-            block_height: Default::default(),
-            source:       Default::default(),
-            limit:        Default::default(),
-            searcher:     Default::default()
+impl Hash for PreProposal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash the block height
+        self.block_height.hash(state);
+
+        // Hash the source
+        self.source.hash(state);
+
+        // Hash the limit HashMap in a deterministic way
+        let mut limit_keys: Vec<_> = self.limit.keys().collect();
+        limit_keys.sort(); // Ensure consistent order
+        for key in limit_keys {
+            key.hash(state);
+            self.limit[key].hash(state);
         }
+
+        // Hash the searcher HashMap in a deterministic way
+        let mut searcher_keys: Vec<_> = self.searcher.keys().collect();
+        searcher_keys.sort(); // Ensure consistent order
+        for key in searcher_keys {
+            key.hash(state);
+            self.searcher[key].hash(state);
+        }
+
+        // Hash the signature
+        self.signature.hash(state);
     }
 }
 
@@ -50,8 +68,8 @@ impl Default for PreProposal {
 pub struct PreProposalContent {
     pub block_height: BlockNumber,
     pub source:       PeerId,
-    pub limit:        Vec<OrderWithStorageData<GroupedVanillaOrder>>,
-    pub searcher:     Vec<OrderWithStorageData<TopOfBlockOrder>>
+    pub limit:        HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>>,
+    pub searcher:     HashMap<PoolId, SearcherOrder>
 }
 
 // the reason for the manual implementation is because EcDSA signatures are not
@@ -62,11 +80,24 @@ impl std::hash::Hash for PreProposalContent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.block_height.hash(state);
         self.source.hash(state);
-        self.limit.hash(state);
-        self.searcher.hash(state);
+
+        // Sort and hash the limit orders
+        let mut limit_keys: Vec<_> = self.limit.keys().collect();
+        limit_keys.sort();
+        for key in limit_keys {
+            key.hash(state);
+            self.limit[key].hash(state);
+        }
+
+        // Sort and hash the searcher orders
+        let mut searcher_keys: Vec<_> = self.searcher.keys().collect();
+        searcher_keys.sort();
+        for key in searcher_keys {
+            key.hash(state);
+            self.searcher[key].hash(state);
+        }
     }
 }
-
 impl PreProposal {
     pub fn content(&self) -> PreProposalContent {
         PreProposalContent {
@@ -87,8 +118,8 @@ impl PreProposal {
     pub fn generate_pre_proposal(
         ethereum_height: BlockNumber,
         sk: &AngstromSigner,
-        limit: Vec<OrderWithStorageData<GroupedVanillaOrder>>,
-        searcher: Vec<OrderWithStorageData<TopOfBlockOrder>>
+        limit: HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>>,
+        searcher: HashMap<PoolId, SearcherOrder>
     ) -> Self {
         let payload = Self::serialize_payload(&ethereum_height, &limit, &searcher);
         let signature = Self::sign_payload(sk, payload);
@@ -102,10 +133,28 @@ impl PreProposal {
         orders: OrderSet<GroupedVanillaOrder, TopOfBlockOrder>
     ) -> Self {
         let OrderSet { limit, searcher } = orders;
-        let limit_orders = limit.len();
-        let searcher_orders = searcher.len();
-        tracing::info!(%limit_orders,%searcher_orders, %ethereum_height,"building my pre_proposal");
-        Self::generate_pre_proposal(ethereum_height, sk, limit, searcher)
+
+        let limit_map: HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>> = limit
+            .into_iter()
+            .map(|order_with_storage| {
+                let pool_id = order_with_storage.pool_id;
+                (pool_id, order_with_storage.clone())
+            })
+            .collect();
+        let searcher_map: HashMap<PoolId, SearcherOrder> = searcher
+            .into_iter()
+            .map(|order_with_storage| {
+                let pool_id = order_with_storage.pool_id;
+                let searcher_order = SearcherOrder {
+                    tobo:       order_with_storage.clone(), // maybe shouldnt clone here
+                    tob_reward: order_with_storage.tob_reward
+                };
+                (pool_id, searcher_order)
+            })
+            .collect();
+
+        // Call generate_pre_proposal with HashMap
+        Self::generate_pre_proposal(ethereum_height, sk, limit_map, searcher_map)
     }
 
     /// ensures block height is correct as-well as validates the signature.
@@ -121,13 +170,28 @@ impl PreProposal {
 
     fn serialize_payload(
         block_height: &BlockNumber,
-        limit: &Vec<OrderWithStorageData<GroupedVanillaOrder>>,
-        searcher: &Vec<OrderWithStorageData<TopOfBlockOrder>>
+        limit: &HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>>,
+        searcher: &HashMap<PoolId, SearcherOrder>
     ) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend(bincode::serialize(block_height).unwrap());
-        buf.extend(bincode::serialize(limit).unwrap());
-        buf.extend(bincode::serialize(searcher).unwrap());
+
+        // Serialize limit orders in sorted order
+        let mut limit_keys: Vec<_> = limit.keys().collect();
+        limit_keys.sort();
+        for key in limit_keys {
+            buf.extend(bincode::serialize(key).unwrap());
+            buf.extend(bincode::serialize(&limit[key]).unwrap());
+        }
+
+        // Serialize searcher orders in sorted order
+        let mut searcher_keys: Vec<_> = searcher.keys().collect();
+        searcher_keys.sort();
+        for key in searcher_keys {
+            buf.extend(bincode::serialize(key).unwrap());
+            buf.extend(bincode::serialize(&searcher[key]).unwrap());
+        }
+
         buf
     }
 
@@ -138,19 +202,21 @@ impl PreProposal {
     pub fn orders_by_pool_id(
         preproposals: &[PreProposal]
     ) -> HashMap<PoolId, HashSet<OrderWithStorageData<GroupedVanillaOrder>>> {
-        preproposals
-            .iter()
-            .flat_map(|p| p.limit.iter())
-            .cloned()
-            .fold(HashMap::new(), |mut acc, order| {
-                acc.entry(order.pool_id).or_default().insert(order);
+        preproposals.iter().flat_map(|p| p.limit.iter()).fold(
+            HashMap::new(),
+            |mut acc, (pool_id, order_with_storage)| {
+                acc.entry(*pool_id)
+                    .or_default()
+                    .insert(order_with_storage.clone());
                 acc
-            })
+            }
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
 
     use super::PreProposal;
     use crate::primitive::AngstromSigner;
@@ -158,8 +224,8 @@ mod tests {
     #[test]
     fn can_be_constructed() {
         let ethereum_height = 100;
-        let limit = vec![];
-        let searcher = vec![];
+        let limit = HashMap::new();
+        let searcher = HashMap::new();
         let sk = AngstromSigner::random();
         PreProposal::generate_pre_proposal(ethereum_height, &sk, limit, searcher);
     }
@@ -167,9 +233,8 @@ mod tests {
     #[test]
     fn can_validate_self() {
         let ethereum_height = 100;
-        let limit = vec![];
-        let searcher = vec![];
-        // Generate crypto stuff
+        let limit = HashMap::new();
+        let searcher = HashMap::new();
         let sk = AngstromSigner::random();
         let preproposal = PreProposal::generate_pre_proposal(ethereum_height, &sk, limit, searcher);
 
