@@ -1,8 +1,10 @@
-use alloy_primitives::U256;
+use std::collections::HashMap;
+
+use alloy_primitives::{FixedBytes, U256};
 use angstrom_types::{
-    consensus::{PreProposal, PreProposalAggregation},
+    consensus::{PreProposal, PreProposalAggregation, SearcherOrder},
     orders::OrderPriorityData,
-    primitive::AngstromSigner,
+    primitive::{AngstromSigner, PoolId},
     sol_bindings::{
         grouped_orders::OrderWithStorageData, testnet::random::Randomizer, RawPoolOrder
     }
@@ -10,8 +12,9 @@ use angstrom_types::{
 use rand::{thread_rng, Rng};
 
 use super::pool::{Pool, PoolBuilder};
-use crate::type_generator::orders::{
-    DistributionParameters, OrderDistributionBuilder, OrderIdBuilder, ToBOrderBuilder
+use crate::type_generator::{
+    consensus::GroupedVanillaOrder,
+    orders::{DistributionParameters, OrderDistributionBuilder, OrderIdBuilder, ToBOrderBuilder}
 };
 
 #[derive(Debug, Default)]
@@ -57,8 +60,7 @@ impl PreProposalAggregationBuilder {
         let block = self.block.unwrap_or_default();
         let sk = self.sk.unwrap_or_else(AngstromSigner::random);
         // Build the source ID from the secret/public keypair
-
-        let limit = pools
+        let limit: HashMap<PoolId, OrderWithStorageData<GroupedVanillaOrder>> = pools
             .iter()
             .flat_map(|pool| {
                 let (bid_dist, ask_dist) =
@@ -86,9 +88,10 @@ impl PreProposalAggregationBuilder {
                     .unwrap();
                 [bids, asks].concat()
             })
+            .map(|order| (order.pool_id, order)) // Use `pool_id` as the key
             .collect();
 
-        let searcher = pools
+        let searcher: HashMap<PoolId, SearcherOrder> = pools
             .iter()
             .map(|pool_id| {
                 let mut rng = thread_rng();
@@ -112,7 +115,7 @@ impl PreProposalAggregationBuilder {
                     gas:       Randomizer::gen(&mut rng),
                     gas_units: Randomizer::gen(&mut rng)
                 };
-                OrderWithStorageData {
+                let order_with_storage_data = OrderWithStorageData {
                     invalidates: vec![],
                     order,
                     priority_data,
@@ -123,7 +126,11 @@ impl PreProposalAggregationBuilder {
                     pool_id: pool_id.id(),
                     valid_block: block,
                     tob_reward: U256::ZERO
-                }
+                };
+                let searcher_order = SearcherOrder {
+                    tobo:       order_with_storage_data.clone(),
+                    tob_reward: order_with_storage_data.tob_reward,                };
+                (pool_id.id(), searcher_order) // Use `pool_id` as the key
             })
             .collect();
 

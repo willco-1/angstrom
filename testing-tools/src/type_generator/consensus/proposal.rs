@@ -115,7 +115,7 @@ impl ProposalBuilder {
             .flat_map(|p| p.pre_proposals.iter())
             .flat_map(|p| p.searcher.iter())
             .fold(HashMap::new(), |mut acc, order| {
-                acc.entry(order.pool_id).or_insert(order.clone());
+                acc.entry(*order.0).or_insert(order.1.tobo.clone());
                 acc
             });
         let solutions = books
